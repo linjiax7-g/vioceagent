@@ -1,0 +1,96 @@
+# Environment variables
+.env
+.env.*
+*.env
+!.env.example
+FRONTEND_ENV_EXAMPLE
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+ENV/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.jsonl
+mcp_logs.jsonl
+
+# Database
+*.sqlite3
+*.db
+
+# ChromaDB
+chroma_db/
+
+# Audio files
+tts_output/
+*.wav
+*.mp3
+
+# Model files
+*.pt
+*.pth
+*.ckpt
+text_emb.pt
+
+# Build outputs
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Data files (optional, uncomment if you don't want to upload large data files)
+# *.csv
+# *.parquet
+# *.json
+data/
+
