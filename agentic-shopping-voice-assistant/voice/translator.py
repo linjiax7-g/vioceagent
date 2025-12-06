@@ -2,26 +2,18 @@ from langchain_core.prompts import PromptTemplate
 from graph.models.llm import get_llm
 from loguru import logger
 
-from typing import Optional, List
-
 TRANSLATE_TEMPLATE = """<|im_start|>system
-You are a professional translator.
-Target Language: {target_language}
-
-Instructions:
-1. Translate the text provided by the user to {target_language}.
-2. Output ONLY the translation. Do NOT add any explanations, notes, or preambles.
-3. Do NOT translate proper nouns, product titles, or brand names. Keep them in their original language.
-{preserved_terms_instruction}
+You are a professional translator. Translate the following text to {target_language}.
+Do not add any explanations or extra text, just provide the translation.
 <|im_end|>
 <|im_start|>user
-{text}
+Text: {text}
 <|im_end|>
 <|im_start|>assistant
 """
 
 translate_prompt = PromptTemplate(
-    input_variables=["text", "target_language", "preserved_terms_instruction"],
+    input_variables=["text", "target_language"],
     template=TRANSLATE_TEMPLATE
 )
 
@@ -76,14 +68,13 @@ LANGUAGE_CODE_MAP = {
     "uk": "Ukrainian"
 }
 
-def translate_text(text: str, target_language: str = "Chinese", preserved_terms: Optional[List[str]] = None) -> str:
+def translate_text(text: str, target_language: str = "Chinese") -> str:
     """
     Translate text using the LLM.
     
     Args:
         text: Text to translate
         target_language: Target language code or name (e.g., "zh" or "Chinese")
-        preserved_terms: Optional list of terms that must not be translated
         
     Returns:
         Translated text
@@ -101,27 +92,12 @@ def translate_text(text: str, target_language: str = "Chinese", preserved_terms:
     # Map code to full name if possible
     full_lang_name = LANGUAGE_CODE_MAP.get(lang_key, target_language)
 
-    # Prepare preserved terms instruction
-    preserved_terms_instruction = ""
-    if preserved_terms:
-        # Filter out empty strings and duplicates
-        terms = sorted(list(set([t for t in preserved_terms if t and t.strip()])))
-        if terms:
-            # Use a bulleted list format which LLMs handle better as "data" rather than "text to translate"
-            # Limit to top 20 terms to avoid token overflow if necessary, though titles are usually short.
-            terms_list = "\n".join([f"- {t}" for t in terms[:20]]) 
-            preserved_terms_instruction = f"\nCONSTRAINT: The following terms MUST be preserved exactly as written (Do NOT translate):\n{terms_list}"
-
     try:
         llm = get_llm()
         chain = translate_prompt | llm
         
         logger.info(f"Translating text to {full_lang_name}...")
-        result = chain.invoke({
-            "text": text, 
-            "target_language": full_lang_name,
-            "preserved_terms_instruction": preserved_terms_instruction
-        })
+        result = chain.invoke({"text": text, "target_language": full_lang_name})
         
         # Clean up result if needed (sometimes LLMs add quotes or extra whitespace)
         translated_text = result.strip()

@@ -562,12 +562,7 @@ async def process_query(request: QueryRequest):
         # Translate if needed (only affects TTS, answer_text remains English for UI unless we update it)
         text_to_speak = answer_text
         if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
-            # Extract product titles to prevent translation of proper names
-            preserved_terms = []
-            if result.get("retrieved_docs"):
-                preserved_terms = [doc.get("title") for doc in result["retrieved_docs"] if doc.get("title")]
-            
-            translated_text = translate_text(answer_text, request.output_language, preserved_terms=preserved_terms)
+            translated_text = translate_text(answer_text, request.output_language)
             logger.info(f"Translated text: {translated_text[:50]}...")
             text_to_speak = translated_text
             # Update answer text for frontend display as well (per user requirement)
@@ -757,12 +752,7 @@ async def process_query_stream(request: QueryRequest):
                     # Translate if needed
                     text_to_speak = answer_text
                     if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
-                        # Extract product titles to prevent translation of proper names
-                        preserved_terms = []
-                        if final_result.get("retrieved_docs"):
-                            preserved_terms = [doc.get("title") for doc in final_result["retrieved_docs"] if doc.get("title")]
-
-                        translated_text = translate_text(answer_text, request.output_language, preserved_terms=preserved_terms)
+                        translated_text = translate_text(answer_text, request.output_language)
                         logger.info(f"Translated text: {translated_text[:50]}...")
                         text_to_speak = translated_text
                         # Update answer text for frontend display as well
