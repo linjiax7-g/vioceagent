@@ -10,6 +10,7 @@ interface VoiceSettingsProps {
 export interface VoiceConfig {
   agentVoice: string;
   userVoice: string;
+  language?: string;
 }
 
 type VoiceOption = {
@@ -21,6 +22,19 @@ type VoiceOption = {
   description: string;
   badge?: string;
 };
+
+const LANGUAGE_OPTIONS = [
+  { id: 'en', name: 'English', flag: '🇺🇸' },
+  { id: 'zh', name: 'Chinese', flag: '🇨🇳' },
+  { id: 'ja', name: 'Japanese', flag: '🇯🇵' },
+  { id: 'ko', name: 'Korean', flag: '🇰🇷' },
+  { id: 'es', name: 'Spanish', flag: '🇪🇸' },
+  { id: 'fr', name: 'French', flag: '🇫🇷' },
+  { id: 'de', name: 'German', flag: '🇩🇪' },
+  { id: 'it', name: 'Italian', flag: '🇮🇹' },
+  { id: 'pt', name: 'Portuguese', flag: '🇵🇹' },
+  { id: 'hi', name: 'Hindi', flag: '🇮🇳' }
+];
 
 const VOICE_OPTIONS: VoiceOption[] = [
   { id: 'sarah', name: 'Sarah', gender: 'female', accent: 'US', vibe: 'Balanced', description: 'Clear, young American tone', badge: 'Default' },
@@ -45,19 +59,22 @@ const VOICE_OPTIONS: VoiceOption[] = [
 
 const VoiceSettings: React.FC<VoiceSettingsProps> = ({ isOpen, onClose, onSave, currentSettings }) => {
   const [agentVoice, setAgentVoice] = useState(currentSettings.agentVoice);
+  const [language, setLanguage] = useState(currentSettings.language || 'en');
   const [filter, setFilter] = useState<'all' | 'female' | 'male'>('all');
 
   useEffect(() => {
     setAgentVoice(currentSettings.agentVoice);
+    setLanguage(currentSettings.language || 'en');
   }, [currentSettings]);
 
   const handleSave = () => {
-    onSave({ agentVoice, userVoice: currentSettings.userVoice });
+    onSave({ agentVoice, userVoice: currentSettings.userVoice, language });
     onClose();
   };
 
   const handleReset = () => {
     setAgentVoice('sarah');
+    setLanguage('en');
   };
 
   const handleVoiceSelect = (voiceId: string) => {
@@ -95,7 +112,7 @@ const VoiceSettings: React.FC<VoiceSettingsProps> = ({ isOpen, onClose, onSave, 
           background: '#fff',
           borderRadius: '20px',
           width: 'min(640px, 100%)',
-          maxHeight: '90vh',
+          height: 'min(800px, 90vh)',
           overflow: 'hidden',
           boxShadow: '0 20px 60px rgba(15, 23, 42, 0.25)',
           display: 'flex',
@@ -110,10 +127,7 @@ const VoiceSettings: React.FC<VoiceSettingsProps> = ({ isOpen, onClose, onSave, 
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          position: 'sticky',
-          top: 0,
           background: '#fff',
-          borderRadius: '16px 16px 0 0',
           zIndex: 1
         }}>
           <div>
@@ -155,27 +169,73 @@ const VoiceSettings: React.FC<VoiceSettingsProps> = ({ isOpen, onClose, onSave, 
         </div>
 
         {/* Content */}
-        <div style={{ padding: '24px', overflow: 'auto' }}>
+        <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
           {/* Summary card */}
           <div style={{ marginBottom: '20px' }}>
-            <div
-              style={{
-                textAlign: 'left',
-                borderRadius: '16px',
-                border: '2px solid #2563eb',
-                padding: '16px',
-                background: 'rgba(37, 99, 235, 0.06)',
-                boxShadow: '0 6px 18px rgba(37, 99, 235, 0.12)'
-              }}
-            >
-              <div style={{ marginBottom: '8px', color: '#4b5563', fontSize: '13px' }}>
-                Assistant voice
+            <div style={{ display: 'flex', gap: '16px' }}>
+              <div
+                style={{
+                  flex: 1,
+                  textAlign: 'left',
+                  borderRadius: '16px',
+                  border: '2px solid #2563eb',
+                  padding: '16px',
+                  background: 'rgba(37, 99, 235, 0.06)',
+                  boxShadow: '0 6px 18px rgba(37, 99, 235, 0.12)'
+                }}
+              >
+                <div style={{ marginBottom: '8px', color: '#4b5563', fontSize: '13px' }}>
+                  Assistant voice
+                </div>
+                <div style={{ fontSize: '18px', fontWeight: 600, color: '#111827', marginBottom: '4px' }}>
+                  {currentVoice(agentVoice)?.name ?? 'Not set'}
+                </div>
+                <div style={{ fontSize: '13px', color: '#6b7280' }}>
+                  {currentVoice(agentVoice) ? `${currentVoice(agentVoice)?.accent} • ${currentVoice(agentVoice)?.vibe}` : 'Select a voice below'}
+                </div>
               </div>
-              <div style={{ fontSize: '18px', fontWeight: 600, color: '#111827', marginBottom: '4px' }}>
-                {currentVoice(agentVoice)?.name ?? 'Not set'}
-              </div>
-              <div style={{ fontSize: '13px', color: '#6b7280' }}>
-                {currentVoice(agentVoice) ? `${currentVoice(agentVoice)?.accent} • ${currentVoice(agentVoice)?.vibe}` : 'Select a voice below'}
+
+              <div
+                style={{
+                  flex: 1,
+                  textAlign: 'left',
+                  borderRadius: '16px',
+                  border: '1px solid #e5e7eb',
+                  padding: '16px',
+                  background: '#fff',
+                  boxShadow: '0 2px 8px rgba(15, 23, 42, 0.06)'
+                }}
+              >
+                <div style={{ marginBottom: '8px', color: '#4b5563', fontSize: '13px' }}>
+                  Language
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {LANGUAGE_OPTIONS.map((lang) => (
+                    <button
+                      key={lang.id}
+                      onClick={() => setLanguage(lang.id)}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        borderRadius: '8px',
+                        border: language === lang.id ? '1px solid #2563eb' : '1px solid #e5e7eb',
+                        background: language === lang.id ? 'rgba(37, 99, 235, 0.08)' : '#fff',
+                        color: language === lang.id ? '#1d4ed8' : '#374151',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: 500,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      <span>{lang.flag}</span>
+                      <span>{lang.name}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -242,45 +302,51 @@ const VoiceSettings: React.FC<VoiceSettingsProps> = ({ isOpen, onClose, onSave, 
               );
             })}
           </div>
+        </div>
 
-          {/* Footer actions */}
-          <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-            <button
-              onClick={handleReset}
-              style={{
-                flex: 1,
-                padding: '12px 16px',
-                borderRadius: '12px',
-                border: '1px solid #e5e7eb',
-                outline: 'none',
-                background: '#fff',
-                color: '#374151',
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif'
-              }}
-            >
-              Reset
-            </button>
-            <button
-              onClick={handleSave}
-              style={{
-                flex: 2,
-                padding: '12px 16px',
-                borderRadius: '12px',
-                border: 'none',
-                outline: 'none',
-                background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
-                color: '#fff',
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
-                boxShadow: '0 10px 25px rgba(37, 99, 235, 0.25)'
-              }}
-            >
-              Save changes
-            </button>
-          </div>
+        {/* Footer actions */}
+        <div style={{ 
+          padding: '24px', 
+          borderTop: '1px solid #e5e7eb',
+          display: 'flex', 
+          gap: '12px',
+          background: '#fff'
+        }}>
+          <button
+            onClick={handleReset}
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              borderRadius: '12px',
+              border: '1px solid #e5e7eb',
+              outline: 'none',
+              background: '#fff',
+              color: '#374151',
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif'
+            }}
+          >
+            Reset
+          </button>
+          <button
+            onClick={handleSave}
+            style={{
+              flex: 2,
+              padding: '12px 16px',
+              borderRadius: '12px',
+              border: 'none',
+              outline: 'none',
+              background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+              color: '#fff',
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
+              boxShadow: '0 10px 25px rgba(37, 99, 235, 0.25)'
+            }}
+          >
+            Save changes
+          </button>
         </div>
       </div>
     </div>

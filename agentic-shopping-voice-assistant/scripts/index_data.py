@@ -1,87 +1,98 @@
 """
 Data indexing script for Amazon Product Dataset 2020
-Uses pre-extracted metadata from extract_metadata.py
+Uses pre-computed embeddings from text_emb.pt and data_cleaned.csv
 """
 
 import pandas as pd
+import torch
+import numpy as np
 from pathlib import Path
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
+from langchain_community.vectorstores import FAISS
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def load_enriched_data():
-    """Load enriched dataset with metadata"""
-    data_path = Path("data/amazon_enriched.parquet")
+def load_data():
+    """Load cleaned dataset and pre-computed embeddings"""
+    csv_path = Path("data/data_cleaned.csv")
+    emb_path = Path("text_emb.pt")
     
-    if not data_path.exists():
-        raise FileNotFoundError(
-            "Enriched data not found. Run 'python scripts/extract_metadata.py' first!"
-        )
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Data file not found at {csv_path}")
     
-    df = pd.read_parquet(data_path)
-    return df
+    if not emb_path.exists():
+        raise FileNotFoundError(f"Embeddings file not found at {emb_path}")
+        
+    logger.info(f"Loading data from {csv_path}...")
+    df = pd.read_csv(csv_path)
+    
+    logger.info(f"Loading embeddings from {emb_path}...")
+    embeddings = torch.load(emb_path)
+    
+    if len(df) != len(embeddings):
+        raise ValueError(f"Data length ({len(df)}) does not match embeddings length ({len(embeddings)})")
+        
+    return df, embeddings
 
-
-def index_products(df: pd.DataFrame = None, persist_directory: str = "./chroma_db"):
+def index_products(persist_directory: str = "./faiss_db"):
     """
-    Index products into vector database with rich metadata
+    Index products into FAISS using pre-computed embeddings
     """
-    if df is None:
-        df = load_enriched_data()
+    df, embeddings_tensor = load_data()
     
-    # Select columns for embedding
-    useful_columns = ["Product Name", "About Product", "Product Specification"]
-    df_embed = df[['Uniq Id'] + useful_columns + ['Selling Price', 'category', 'brand', 'material']].copy()
-    df_embed = df_embed.fillna("")
+    # Convert tensor to list of lists for LangChain
+    logger.info("Converting embeddings to list...")
+    embeddings_list = embeddings_tensor.tolist()
     
-    # Create embedding text
-    df_embed['embed_text'] = df_embed.apply(
-        lambda x: f"Product Name: {x['Product Name']}. "
-                  f"About Product: {x['About Product']}. "
-                  f"Product Specification: {x['Product Specification']}",
-        axis=1
-    )
-    
-    # Prepare metadata with all filters
+    # Prepare texts and metadata
+    text_embeddings = []
     metadatas = []
-    for _, row in df_embed.iterrows():
+    
+    logger.info("Preparing metadata...")
+    for idx, row in df.iterrows():
+        # Use rich_description as the content
+        content = row.get("rich_description", "")
+        if pd.isna(content):
+            content = ""
+            
+        # Prepare metadata
+        # Note: brand and material are not in data_cleaned.csv, setting as empty defaults
         metadata = {
-            "Uniq Id": row["Uniq Id"],
-            "Product Name": row["Product Name"],
-            "Selling Price": row["Selling Price"],
-            "category": row["category"] if pd.notna(row["category"]) else "",
-            "brand": row["brand"] if pd.notna(row["brand"]) else "",
-            "material": row["material"] if pd.notna(row["material"]) else "",
+            "Uniq Id": row.get("uniq_id", ""),
+            "Product Name": row.get("product_name", ""),
+            "Selling Price": row.get("selling_price", 0),
+            "category": row.get("category", ""),
+            "brand": "",     # Not available in data_cleaned.csv
+            "material": "",  # Not available in data_cleaned.csv
         }
+        
+        text_embeddings.append((content, embeddings_list[idx]))
         metadatas.append(metadata)
     
-    # Generate embeddings
-    print(f"Creating embeddings for {len(df_embed)} products...")
-    embedder = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    
-    # Initialize Chroma vector store
-    vector_store = Chroma.from_texts(
-        texts=df_embed['embed_text'].tolist(),
-        metadatas=metadatas,
-        embedding=embedder,
-        persist_directory=persist_directory
+    # Initialize Embedding Function (needed for query embedding at runtime)
+    # Must match the model used to generate text_emb.pt (assuming stella-base-en-v2)
+    logger.info("Loading embedding model for reference...")
+    embedder = HuggingFaceEmbeddings(
+        model_name="infgrad/stella-base-en-v2",
+        model_kwargs={"trust_remote_code": True}
     )
     
-    print(f"✓ Indexed {len(df_embed)} products to {persist_directory}")
+    # Create FAISS index from pre-computed embeddings
+    logger.info("Creating FAISS index...")
+    vector_store = FAISS.from_embeddings(
+        text_embeddings=text_embeddings,
+        embedding=embedder,
+        metadatas=metadatas
+    )
     
+    # Save
+    logger.info(f"Saving index to {persist_directory}...")
+    vector_store.save_local(persist_directory)
+    
+    logger.info(f"✓ Successfully indexed {len(df)} products to {persist_directory}")
     return vector_store
 
-
 if __name__ == "__main__":
-    df = load_enriched_data()
-    print(f"Loaded {len(df)} enriched products")
-    
-    # Show metadata stats
-    print(f"\nMetadata coverage:")
-    print(f"  Categories: {df['category'].notna().sum()}/{len(df)}")
-    print(f"  Brands: {df['brand'].notna().sum()}/{len(df)}")
-    print(f"  Materials: {df['material'].notna().sum()}/{len(df)}")
-    
-    persist_dir = "./chroma_db"
-    vector_store = index_products(df, persist_directory=persist_dir)
-    print(f"\n✓ Vector store ready at {persist_dir}")
+    index_products()

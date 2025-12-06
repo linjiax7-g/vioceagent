@@ -30,8 +30,9 @@ def parse_answer_with_citations(text: str) -> Dict:
         doc_refs = re.findall(r'\[DOC\s+(\d+)\]', citation_text)
         citations = [f"DOC {ref}" for ref in doc_refs]
         
-        # Remove citation line from answer
+        # Remove citation line from answer (it will be shown in the table instead)
         text = text[:citation_match.start()].strip()
+        logger.info(f"[Parser] Removed Citations line from answer. Extracted {len(citations)} citations.")
     
     # Also find any inline citations in answer (for tracking)
     inline_citations = re.findall(r'\[DOC\s+(\d+)\]', text)

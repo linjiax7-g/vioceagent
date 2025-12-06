@@ -68,13 +68,15 @@ class WhisperASR:
     async def transcribe(
         self,
         audio_data: bytes,
-        language: Optional[str] = None
+        language: Optional[str] = None,
+        initial_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """Transcribe audio data to text.
         
         Args:
             audio_data: Raw audio bytes in 16-bit PCM format
             language: Language code for transcription (overrides default)
+            initial_prompt: Optional prompt to guide the model (context)
             
         Returns:
             Dictionary with 'text', 'language', and 'segments' keys
@@ -97,11 +99,12 @@ class WhisperASR:
         lang = language or self.language
         
         # Run transcription in thread pool to avoid blocking
-        logger.info(f"Running Whisper transcription (language: {lang})...")
+        logger.info(f"Running Whisper transcription (language: {lang}, prompt: {initial_prompt})...")
         segments, info = await asyncio.to_thread(
             self._model.transcribe,
             audio_float,
             language=lang,
+            initial_prompt=initial_prompt,
             beam_size=5,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500)
@@ -196,8 +199,8 @@ _asr_instance: Optional[WhisperASR] = None
 
 
 def get_asr_instance(
-    model: str = "base",
-    device: str = "cpu",  # Changed from "auto" to "cpu" to avoid CUDA issues
+    model: str = "large-v3",
+    device: str = "cuda",
     language: str = "en"
 ) -> WhisperASR:
     """Get or create the global ASR instance.

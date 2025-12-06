@@ -5,8 +5,10 @@ An intelligent voice shopping assistant backend system based on LangGraph and Fa
 ## Core Features
 
 - **Intelligent Agent Pipeline**: LangGraph-based Router → Planner → Retriever → Answerer workflow
-- **Hybrid Retrieval System**: Private FAISS/ChromaDB vector database + real-time web search
-- **Voice Processing**: Integrated OpenAI TTS (Text-to-Speech) and Whisper ASR (Automatic Speech Recognition)
+- **Hybrid Retrieval System**: Local ChromaDB vector database + real-time web search
+- **Multilingual Support**: Real-time translation for both text and voice responses (supports 30+ languages)
+- **Voice Processing**: Integrated ElevenLabs TTS (high-quality voice generation) and Whisper ASR (speech recognition)
+- **Real-time Streaming**: Support for streaming step logs and audio generation
 - **MCP Tool Integration**: Support for `web.search` and `rag.search` tool calls
 - **Unified API Gateway**: FastAPI-driven RESTful API
 - **Product Data Management**: Support for Amazon product dataset indexing and retrieval
@@ -52,7 +54,8 @@ agentic-shopping-voice-assistant/
 │
 ├── voice/                      # Voice processing modules
 │   ├── asr.py                  # Speech recognition (Whisper)
-│   └── tts.py                  # Text-to-speech (OpenAI TTS)
+│   ├── tts.py                  # Text-to-speech (ElevenLabs)
+│   └── translator.py           # Real-time translation service
 │
 ├── scripts/                    # Data processing scripts
 │   ├── extract_metadata.py    # Extract product metadata
@@ -102,9 +105,13 @@ Create a `.env` file (or `.env.local`) in the project root directory with the fo
 
 ```bash
 # Required API keys
-OPENAI_API_KEY=sk-...                    # OpenAI API (for TTS and LLM)
+OPENAI_API_KEY=sk-...                    # OpenAI API (for LLM)
 GROQ_API_KEY=gsk_...                     # Groq API (for fast inference)
 SERPER_API_KEY=...                       # Serper API (for web search)
+ELEVENLABS_API_KEY=...                   # ElevenLabs API (for high-quality TTS)
+
+# Optional: Voice Configuration
+ELEVENLABS_DEFAULT_VOICE=sarah           # Default voice ID or name
 
 # Optional: Data files (Google Drive)
 DATA_DRIVE_ID=...                        # Product data file ID
@@ -160,7 +167,9 @@ After the service starts, access:
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/api/query` | POST | Complete voice query pipeline (Query → LangGraph → TTS) |
-| `/api/tts` | POST | Text-to-speech |
+| `/api/query/stream` | POST | Streaming query pipeline with real-time step logs |
+| `/api/tts` | POST | Text-to-speech (save to file) |
+| `/api/tts/stream` | POST | Text-to-speech (streaming audio) |
 | `/api/asr` | POST | Speech-to-text |
 | `/api/tts/audio/{audio_id}` | GET | Get generated audio file |
 
@@ -173,7 +182,20 @@ curl -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "I need a laptop for office work",
+    "voice": "sarah",
+    "output_language": "en",
     "generate_audio": true
+  }'
+```
+
+**Streaming Query**
+
+```bash
+curl -X POST http://localhost:8000/api/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "show me shoes",
+    "output_language": "es"
   }'
 ```
 
@@ -184,7 +206,8 @@ curl -X POST http://localhost:8000/api/tts \
   -H "Content-Type: application/json" \
   -d '{
     "text": "This is a high-performance laptop",
-    "voice": "nova"
+    "voice": "sarah",
+    "output_language": "fr"
   }'
 ```
 
@@ -258,12 +281,11 @@ The frontend will call the following backend endpoints:
 - **MCP** 0.9.0+ - Model Context Protocol
 
 ### Voice Processing
-- **Faster-Whisper** 1.0.0+ - Local speech recognition
-- **OpenAI TTS** - Text-to-speech
+- **Faster-Whisper** 1.0.0+ - Local speech recognition (Large-v3 model)
+- **ElevenLabs** - High-quality Text-to-speech
 - **PyDub** - Audio processing
 
 ### Data & Retrieval
-- **FAISS** - Vector similarity search
 - **ChromaDB** - Vector database
 - **Sentence-Transformers** - Text embeddings
 - **Pandas** + **PyArrow** - Data processing
@@ -367,13 +389,7 @@ class CustomSearchTool(Tool):
    python scripts/index_data.py
    ```
 
-2. **CUDA/GPU errors**
-   ```bash
-   # Use CPU version of FAISS
-   pip install faiss-cpu
-   ```
-
-3. **Audio files not generated**
+2. **Audio files not generated**
    - Check if `OPENAI_API_KEY` is configured correctly
    - Ensure `tts_output/` directory exists and is writable
 

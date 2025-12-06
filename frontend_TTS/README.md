@@ -116,7 +116,9 @@ The frontend calls the following backend endpoints:
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/query` | Send user query, get AI response and product recommendations |
+| `POST /api/query/stream` | Streaming query with real-time step logs |
 | `POST /api/tts` | Text-to-speech |
+| `POST /api/tts/stream` | Streaming Text-to-speech |
 | `POST /api/asr` | Speech-to-text |
 | `GET /api/tts/audio/{id}` | Get generated audio file |
 
@@ -344,7 +346,7 @@ The main application uses Flexbox layout, adjust proportions in `ShopifyVoiceAss
 **4. Audio playback failure**
 
 - Check if backend TTS functionality is working
-- Confirm `OPENAI_API_KEY` is configured correctly
+- Confirm `ELEVENLABS_API_KEY` (or `OPENAI_API_KEY` if using legacy) is configured correctly in backend
 - Check if audio files are successfully generated in network requests
 
 ### Debugging Tips

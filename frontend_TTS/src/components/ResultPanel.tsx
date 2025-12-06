@@ -372,23 +372,27 @@ const ResultPanel = ({
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
                     <h3
                       style={{
                         margin: 0,
-                        fontSize: 16,
+                        fontSize: 15,
                         fontWeight: 600,
-                        color: '#0f172a',
-                        minHeight: 44,
-                        maxHeight: 44,
+                        color: '#1d1d1f',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: 'vertical',
                         overflow: 'hidden',
-                        textOverflow: 'ellipsis'
+                        lineHeight: '1.4',
+                        height: 'auto',
+                        maxHeight: '4.2em' /* approx 3 lines */
                       }}
+                      title={product.title}
                     >
                       {product.title || 'Unnamed product'}
                     </h3>
                     {product.brand && (
-                      <span style={{ fontSize: 13, color: 'var(--apple-text-secondary)' }}>
+                      <span style={{ fontSize: 13, color: 'var(--apple-text-secondary)', fontWeight: 500 }}>
                         {product.brand}
                       </span>
                     )}
@@ -583,16 +587,33 @@ const ResultPanel = ({
                         </span>
                       </button>
                     </th>
+                    <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', color: 'var(--apple-text-secondary)', letterSpacing: '0.05em', borderBottom: '2px solid rgba(15,23,42,0.08)' }}>Source</th>
                     <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', color: 'var(--apple-text-secondary)', letterSpacing: '0.05em', borderBottom: '2px solid rgba(15,23,42,0.08)' }}>Doc ID</th>
                 </tr>
               </thead>
               <tbody>
                   {tableProducts.map((product, idx) => {
+                    const sourceInfo = getSourceDisplay(product);
                     return (
                       <tr key={`comparison-${product.doc_id || product.title || idx}`} style={{ borderBottom: idx < tableProducts.length - 1 ? '1px solid rgba(15,23,42,0.06)' : 'none' }}>
                         <td style={{ padding: '12px 16px', fontWeight: 600, fontSize: 14 }}>{product.title || 'Unnamed product'}</td>
                         <td style={{ padding: '12px 16px', fontSize: 14 }}>{formatCurrency(product.price)}</td>
                         <td style={{ padding: '12px 16px', fontSize: 14 }}>{formatRating(product.rating)}</td>
+                        <td style={{ padding: '12px 16px', fontSize: 14 }}>
+                          <span 
+                            style={{ 
+                              display: 'inline-block',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '11px',
+                              fontWeight: 500,
+                              backgroundColor: sourceInfo.badge === 'Web' ? 'rgba(236, 72, 153, 0.1)' : (sourceInfo.badge === 'Hybrid' ? 'rgba(124, 58, 237, 0.1)' : 'rgba(14, 165, 233, 0.1)'),
+                              color: sourceInfo.tone
+                            }}
+                          >
+                            {sourceInfo.badge}
+                          </span>
+                        </td>
                         <td style={{ padding: '12px 16px', color: product.cited ? 'var(--apple-primary)' : 'var(--apple-text-secondary)', fontWeight: product.cited ? 600 : 400, fontFamily: 'SF Mono, Monaco, monospace', fontSize: 12 }}>
                           {product.doc_id || '—'}
                     </td>
@@ -610,39 +631,41 @@ const ResultPanel = ({
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '48px 24px',
-          textAlign: 'center'
+          textAlign: 'center',
+          color: 'var(--apple-text-secondary)',
+          paddingBottom: '40px',
+          gap: '20px'
         }}>
           <div style={{
-            maxWidth: '800px',
+            width: '80px',
+            height: '80px',
+            borderRadius: '50%',
+            background: 'rgba(0,0,0,0.03)',
             display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-            width: '100%',
-            padding: '0 16px'
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '40px',
+            marginBottom: '8px'
           }}>
-            <h2 style={{
-              fontSize: '28px',
+            🛍️
+          </div>
+          <div>
+            <h3 style={{
+              fontSize: '18px',
               fontWeight: 600,
-              color: 'var(--apple-text)',
-              margin: 0,
-              letterSpacing: '-0.02em',
-              lineHeight: 1.3,
-              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
-              whiteSpace: 'nowrap',
-              overflow: 'visible'
+              color: 'var(--apple-text-primary)',
+              margin: '0 0 8px 0'
             }}>
-              Ask agent to recommend products for&nbsp;you
-            </h2>
+              Ready to assist
+            </h3>
             <p style={{
-              fontSize: '15px',
+              fontSize: '14px',
+              margin: 0,
               color: 'var(--apple-text-secondary)',
-              margin: '0 auto',
-              lineHeight: 1.6,
-              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
-              maxWidth: '100%'
+              maxWidth: '260px',
+              lineHeight: '1.5'
             }}>
-              Use voice or text to describe what you're looking for, and our AI agent will find the best products&nbsp;for&nbsp;you.
+              Ask me to search for products, compare prices, or find specific items for you.
             </p>
           </div>
         </div>

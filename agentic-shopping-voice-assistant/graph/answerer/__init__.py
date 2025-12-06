@@ -10,41 +10,45 @@ def format_answerer_input(state_dict: dict) -> dict:
     
     # Format retrieved docs
     docs = state_dict.get("retrieved_docs", [])
-    docs_text = "=== ACTUAL PRODUCTS FROM DATABASE - USE THESE EXACT PRODUCTS IN YOUR ANSWER ===\n"
     
-    for i, doc in enumerate(docs, 1):
-        docs_text += f"\n[DOC {i}]"
-        docs_text += f"\nTitle: {doc.get('title', 'N/A')}"
+    if not docs:
+        docs_text = "No products retrieved."
+    else:
+        docs_text = "=== ACTUAL PRODUCTS FROM DATABASE - USE THESE EXACT PRODUCTS IN YOUR ANSWER ===\n"
         
-        # Handle price - can be None from web results
-        price = doc.get('price')
-        if price is not None:
-            docs_text += f"\nPrice: ${price:.2f}"
-        else:
-            docs_text += f"\nPrice: N/A"
-        
-        # Handle rating - can be None if not available
-        rating = doc.get('rating')
-        if rating is not None:
-            docs_text += f"\nRating: {rating:.1f}★"
-        else:
-            docs_text += f"\nRating: N/A"
-        
-        docs_text += f"\nBrand: {doc.get('brand', 'N/A')}"
-        docs_text += f"\nMaterial: {doc.get('material', 'N/A')}"
-        docs_text += f"\nCategory: {doc.get('category', 'N/A')}"
-        
-        # Get content from either 'content' or 'snippet' field
-        content = doc.get('content') or doc.get('snippet', '')
-        if content:
-            docs_text += f"\nContent: {content[:300]}..."
-        
-        # Include URL if available (from web results)
-        if doc.get('url'):
-            docs_text += f"\nURL: {doc.get('url')}"
-        
-        docs_text += f"\nDoc ID: {doc.get('doc_id', 'N/A')}"
-        docs_text += "\n"
+        for i, doc in enumerate(docs, 1):
+            docs_text += f"\n[DOC {i}]"
+            docs_text += f"\nTitle: {doc.get('title', 'N/A')}"
+            
+            # Handle price - can be None from web results
+            price = doc.get('price')
+            if price is not None:
+                docs_text += f"\nPrice: ${price:.2f}"
+            else:
+                docs_text += f"\nPrice: N/A"
+            
+            # Handle rating - can be None if not available
+            rating = doc.get('rating')
+            if rating is not None:
+                docs_text += f"\nRating: {rating:.1f}★"
+            else:
+                docs_text += f"\nRating: N/A"
+            
+            docs_text += f"\nBrand: {doc.get('brand', 'N/A')}"
+            docs_text += f"\nMaterial: {doc.get('material', 'N/A')}"
+            docs_text += f"\nCategory: {doc.get('category', 'N/A')}"
+            
+            # Get content from either 'content' or 'snippet' field
+            content = doc.get('content') or doc.get('snippet', '')
+            if content:
+                docs_text += f"\nContent: {content[:300]}..."
+            
+            # Include URL if available (from web results)
+            if doc.get('url'):
+                docs_text += f"\nURL: {doc.get('url')}"
+            
+            docs_text += f"\nDoc ID: {doc.get('doc_id', 'N/A')}"
+            docs_text += "\n"
     
     # Extract price constraints from filters
     # Handle case where "plan" might be missing (e.g. general_chat skipped planner)
@@ -58,6 +62,14 @@ def format_answerer_input(state_dict: dict) -> dict:
     
     # Handle comparison criteria safely
     comparison_criteria = plan.get("comparison_criteria", [])
+    
+    # Format chat history
+    history = state_dict.get("chat_history", [])
+    history_str = ""
+    for msg in history[-5:]: # Keep last 5 messages context
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        history_str += f"{role}: {content}\n"
 
     return {
         "query": state_dict["query"],
@@ -66,7 +78,8 @@ def format_answerer_input(state_dict: dict) -> dict:
         "comparison_criteria": json.dumps(comparison_criteria),
         "num_products": len(docs),
         "price_constraint": price_constraint.strip(),
-        "safety_flags": state_dict.get("safety_flags", [])
+        "safety_flags": state_dict.get("safety_flags", []),
+        "chat_history": history_str or "None"
     }
 
 def create_answerer_chain():

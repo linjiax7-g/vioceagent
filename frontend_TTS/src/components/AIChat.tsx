@@ -15,6 +15,7 @@ interface AIChatProps {
   recordingTime: number;
   apiBaseUrl: string;
   autoPlayAudioUrl?: string;
+  agentVoice?: string;
 }
 
 const AIChat = ({
@@ -25,7 +26,8 @@ const AIChat = ({
   waveformData,
   recordingTime,
   apiBaseUrl,
-  autoPlayAudioUrl
+  autoPlayAudioUrl,
+  agentVoice = 'alloy'
 }: AIChatProps) => {
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -132,7 +134,7 @@ const AIChat = ({
       const response = await fetch(`${apiBaseUrl}/api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'alloy' })
+        body: JSON.stringify({ text, voice: agentVoice })
       });
 
       if (!response.ok) {
@@ -193,7 +195,7 @@ const AIChat = ({
       }}
       style={{ 
         flex: 1, 
-        padding: '48px 16px 20px 16px', 
+        padding: '20px 16px', 
         overflowY: 'auto', 
         overflowX: 'hidden', 
         display: 'flex', 
@@ -226,9 +228,9 @@ const AIChat = ({
                 {/* Message content */}
                 <div className={`chat-message ${msg.type === 'user' ? 'chat-message-user' : 'chat-message-assistant'}`} style={{ 
                   position: 'relative',
-                  minWidth: '120px'
+                  minWidth: '60px'
                 }}>
-                  <p style={{ fontSize: '15px', margin: 0, lineHeight: '1.45', fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif', fontWeight: 400 }}>
+                  <p style={{ fontSize: '16px', margin: 0, lineHeight: '1.5', fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif', fontWeight: 500, color: 'inherit' }}>
                     {msg.text}
                   </p>
 
@@ -290,7 +292,16 @@ const AIChat = ({
                     }}
                     title={playingMessageIndex === idx ? 'Stop TTS' : 'Play TTS'}
                   >
-                    {playingMessageIndex === idx ? '⏸' : '▶'}
+                    {playingMessageIndex === idx ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="4" width="4" height="16" rx="1" />
+                        <rect x="14" y="4" width="4" height="16" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ marginLeft: 1 }}>
+                        <path d="M5 3l14 9-14 9V3z" />
+                      </svg>
+                    )}
                   </button>
                 )}
               </div>
@@ -352,7 +363,10 @@ const AIChat = ({
           }}
           title="Scroll to bottom"
         >
-          ↓
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <polyline points="19 12 12 19 5 12"></polyline>
+          </svg>
         </button>
       )}
     </div>

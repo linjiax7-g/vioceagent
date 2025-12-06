@@ -47,6 +47,39 @@ def _enforce_availability_plan(state: GraphState, plan: Dict[str, Any]) -> Dict[
     return normalized_plan
 
 
+def _generate_search_query(state: GraphState) -> str:
+    """
+    Generate a better search query based on constraints if available.
+    This fixes issues where user says "find two more" and semantic search fails.
+    """
+    constraints = state.get("constraints", {})
+    original_query = state.get("query", "")
+    
+    # If we have a specific product identified, construct a query from it
+    if constraints.get("product"):
+        parts = []
+        
+        # Brand
+        brands = constraints.get("brand", [])
+        if brands and isinstance(brands, list):
+            parts.extend(brands)
+        elif brands and isinstance(brands, str):
+            parts.append(brands)
+            
+        # Material/Attribute
+        if constraints.get("material"):
+            parts.append(constraints["material"])
+            
+        # Product Name/Category
+        parts.append(constraints["product"])
+        
+        search_query = " ".join(parts)
+        logger.info(f"🔄 Rewrote query: '{original_query}' -> '{search_query}'")
+        return search_query
+        
+    return original_query
+
+
 # ============================================================
 #  Router Node
 # ============================================================
@@ -61,7 +94,10 @@ def router_node(state: GraphState) -> GraphState:
 
     try:
         router_chain = get_router_chain()
-        result = router_chain.invoke(query)
+        result = router_chain.invoke({
+            "query": query,
+            "chat_history": state.get("chat_history", [])
+        })
         constraints = result.constraints.model_dump(exclude_none=True)
         if price_check and "product" not in constraints and result.constraints.product is None:
             constraints["product"] = query
@@ -148,11 +184,18 @@ def planner_node(state: GraphState) -> GraphState:
         else:
             sources = ["private_rag"]
 
+        # Attempt to recover filters from constraints to avoid losing context
+        constraints = state.get("constraints") or {}
+        filters = {}
+        for key in ["min_price", "max_price", "brand", "material", "category"]:
+            if constraints.get(key):
+                filters[key] = constraints[key]
+
         plan = {
             "sources": sources,
             "retrieval_fields": ["title", "brand", "price", "rating"],
             "comparison_criteria": ["price", "rating"],
-            "filters": {}
+            "filters": filters
         }
         plan = _enforce_availability_plan(state, plan)
         state["plan"] = plan
@@ -175,20 +218,38 @@ def planner_node(state: GraphState) -> GraphState:
 def rag_retriever_node(state: GraphState) -> GraphState:
     try:
         plan = state["plan"]
-        query = state["query"]
+        # Use rewritten query based on constraints if available
+        query = _generate_search_query(state)
         filters = plan.get("filters", {}) or {}
         
         # Get quantity from constraints, default to 3, max 20
         constraints = state.get("constraints", {})
-        k = constraints.get("quantity") if constraints.get("quantity") else 3
-        k = min(k, 20)  # Cap at 20
+        target_k = constraints.get("quantity") if constraints.get("quantity") else 3
+        target_k = min(target_k, 20)  # Cap at 20
 
-        docs = retrieve_from_rag(query=query, filters=filters, k=k)
+        # Calculate fetch amount: target + seen + buffer to allow filtering
+        seen_ids = set(state.get("seen_product_ids", []))
+        fetch_k = target_k + len(seen_ids) + 5
+        fetch_k = min(fetch_k, 50) # Hard cap for retrieval
+
+        logger.info(f"[RAG Node] Fetching {fetch_k} docs with query '{query}' (Target: {target_k}, Seen: {len(seen_ids)})")
+        
+        raw_docs = retrieve_from_rag(query=query, filters=filters, k=fetch_k)
+        
+        # Filter out seen products
+        docs = []
+        for doc in raw_docs:
+            doc_id = str(doc.get('doc_id', ''))
+            if doc_id and doc_id not in seen_ids:
+                docs.append(doc)
+            if len(docs) >= target_k:
+                break
         
         # Fallback to web search if RAG doesn't have enough results
-        if len(docs) < k:
-            logger.info(f"[RAG Node] Only found {len(docs)}/{k} results in RAG, triggering web search fallback...")
-            web_docs = retrieve_from_web(query=query, filters=filters, k=k - len(docs))
+        if len(docs) < target_k:
+            logger.info(f"[RAG Node] Only found {len(docs)}/{target_k} new results in RAG, triggering web search fallback...")
+            web_docs = retrieve_from_web(query=query, filters=filters, k=target_k - len(docs))
+            # Note: Web search filtering is harder as IDs might not match, but we assume web search is fresh
             docs.extend(web_docs)
             logger.info(f"[RAG Node] After web fallback: {len(docs)} total results")
         
@@ -223,16 +284,24 @@ def rag_retriever_node(state: GraphState) -> GraphState:
 def web_retriever_node(state: GraphState) -> GraphState:
     try:
         plan = state["plan"]
-        query = state["query"]
+        # Use rewritten query
+        query = _generate_search_query(state)
         filters = plan.get("filters", {}) or {}
         
         # Get quantity from constraints, default to 3, max 20
         constraints = state.get("constraints", {})
-        k = constraints.get("quantity") if constraints.get("quantity") else 3
-        k = min(k, 20)  # Cap at 20
+        target_k = constraints.get("quantity") if constraints.get("quantity") else 3
+        target_k = min(target_k, 20)  # Cap at 20
 
-        docs = retrieve_from_web(query=query, filters=filters, k=k)
+        # Web search typically returns fresh results, but we can still request a bit more
+        # Since web search is expensive/slow, we don't want to over-fetch too much
+        docs = retrieve_from_web(query=query, filters=filters, k=target_k)
         state["retrieved_docs"] = docs
+        
+        # Log products retrieved from web
+        logger.info(f"[Web Node] Retrieved products ({len(docs)}):")
+        for i, p in enumerate(docs[:5], 1):  # Log first 5
+            logger.info(f"  [{i}] {p.get('title', 'N/A')} - ${p.get('price', 'N/A')}")
 
         state["step_log"].append({
             "node": "web_retriever",
@@ -263,41 +332,52 @@ def web_retriever_node(state: GraphState) -> GraphState:
 def hybrid_retriever_node(state: GraphState) -> GraphState:
     try:
         plan = state["plan"]
-        query = state["query"]
+        # Use rewritten query
+        query = _generate_search_query(state)
         filters = plan.get("filters", {}) or {}
         
         # Get quantity from constraints, default to 3, max 20
         constraints = state.get("constraints", {})
-        total_k = constraints.get("quantity") if constraints.get("quantity") else 3
-        total_k = min(total_k, 20)  # Cap at 20
+        target_k = constraints.get("quantity") if constraints.get("quantity") else 3
+        target_k = min(target_k, 20)  # Cap at 20
         
-        # Request total_k from each source to ensure we get enough results
-        # We'll mix and limit later
-        rag_docs = retrieve_from_rag(query=query, filters=filters, k=total_k)
-        web_docs = retrieve_from_web(query=query, filters=filters, k=total_k)
+        # Calculate fetch amount for RAG
+        seen_ids = set(state.get("seen_product_ids", []))
+        fetch_k = target_k + len(seen_ids) + 5
+        fetch_k = min(fetch_k, 50)
+
+        # Request from each source
+        rag_docs_raw = retrieve_from_rag(query=query, filters=filters, k=fetch_k)
+        web_docs = retrieve_from_web(query=query, filters=filters, k=target_k) # Web is usually fresh
+        
+        # Filter RAG docs
+        rag_docs = []
+        for doc in rag_docs_raw:
+            doc_id = str(doc.get('doc_id', ''))
+            if doc_id and doc_id not in seen_ids:
+                rag_docs.append(doc)
         
         # Intelligent merging strategy
         if len(rag_docs) == 0:
             # No RAG results, use only web
-            all_docs = web_docs[:total_k]
+            all_docs = web_docs[:target_k]
         elif len(web_docs) == 0:
             # No web results, use only RAG
-            all_docs = rag_docs[:total_k]
+            all_docs = rag_docs[:target_k]
         else:
             # Both have results - merge with diversity
-            # Prioritize quality: alternate between sources or mix based on ratings
             all_docs = []
             rag_idx = 0
             web_idx = 0
             
             # Interleave results to ensure diversity
-            while len(all_docs) < total_k and (rag_idx < len(rag_docs) or web_idx < len(web_docs)):
+            while len(all_docs) < target_k and (rag_idx < len(rag_docs) or web_idx < len(web_docs)):
                 # Add RAG result if available
                 if rag_idx < len(rag_docs):
                     all_docs.append(rag_docs[rag_idx])
                     rag_idx += 1
                 
-                if len(all_docs) >= total_k:
+                if len(all_docs) >= target_k:
                     break
                 
                 # Add web result if available
@@ -306,7 +386,7 @@ def hybrid_retriever_node(state: GraphState) -> GraphState:
                     web_idx += 1
             
             # Trim to exact count
-            all_docs = all_docs[:total_k]
+            all_docs = all_docs[:target_k]
         
         state["retrieved_docs"] = all_docs
 
@@ -344,10 +424,17 @@ def answerer_node(state: GraphState) -> GraphState:
     """
     try:
         # Check if this is a general chat or safe-fail case with no docs
-        # But allow "general_chat" task to proceed without docs
-        is_chat = state.get("task") == "general_chat"
+        # But allow "general_chat" and "clarification" tasks to proceed without docs
+        is_chat = state.get("task") in ["general_chat", "clarification"]
         is_safe = not state.get("safety_flags") # Check if there are safety flags
         has_docs = state.get("retrieved_docs") and len(state["retrieved_docs"]) > 0
+        
+        # Log products that the answerer will see
+        if has_docs:
+            products = state.get("retrieved_docs", [])
+            logger.info(f"[Answerer Node] Products to be processed ({len(products)}):")
+            for i, p in enumerate(products[:5], 1):  # Log first 5
+                logger.info(f"  [{i}] {p.get('title', 'N/A')} - ${p.get('price', 'N/A')}")
         
         # If safety flags are present, we still want to invoke the LLM to generate the refusal message
         # So we treat !is_safe similarly to is_chat
@@ -408,4 +495,38 @@ def answerer_node(state: GraphState) -> GraphState:
             "success": False
         })
 
+    return state
+
+
+# ============================================================
+#  Translator Node
+# ============================================================
+
+def translator_node(state: GraphState) -> GraphState:
+    """
+    Translate query to English if needed.
+    """
+    query = state["query"]
+    # Skip if query is empty
+    if not query or not query.strip():
+        return state
+        
+    try:
+        from voice.translator import translate_to_english
+        
+        translated_query = translate_to_english(query)
+        
+        # Check if translation happened (ignoring case/whitespace)
+        if translated_query.strip().lower() != query.strip().lower():
+             state["original_query"] = query
+             # We assume if it translated, the original was not English.
+             # Ideally we'd detect language, but for now we just store the query.
+             state["query"] = translated_query
+             
+             logger.info(f"🌍 Translated query: '{query}' -> '{translated_query}'")
+             
+    except Exception as e:
+        logger.error(f"Translator node error: {e}", exc_info=True)
+        # Fallback to original
+        
     return state

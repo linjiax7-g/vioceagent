@@ -14,11 +14,11 @@ Usage:
 from dotenv import load_dotenv
 load_dotenv()  # This loads the .env file in the current directory
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 from pathlib import Path
 import asyncio
 import base64
@@ -66,6 +66,9 @@ DEFAULT_TTS_VOICE = os.getenv("ELEVENLABS_DEFAULT_VOICE", "sarah")
 _graph_app = None
 _graph_lock = threading.Lock()
 
+# Global Session Storage (In-Memory)
+# Structure: {session_id: {"history": [...], "seen_ids": set()}}
+SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 # ============================================================================
 # Utility Helpers
@@ -117,7 +120,7 @@ def _warm_llm_chains():
 
 
 def _warm_vector_store():
-    """Load FAISS index + sentence transformer into memory."""
+    """Load ChromaDB index + sentence transformer into memory."""
     from graph.retriever.rag import get_vector_store
 
     try:
@@ -163,13 +166,18 @@ class TTSRequest(BaseModel):
         default="tts-1",
         description="TTS model: tts-1 (fast) or tts-1-hd (high quality)"
     )
+    output_language: Optional[str] = Field(
+        default="en",
+        description="Target language for audio output (e.g., 'en', 'Chinese'). If different from 'en', text will be translated."
+    )
 
     class Config:
         schema_extra = {
             "example": {
                 "text": "I found 3 organic shampoos under $20. The best option is Brand X.",
                 "voice": "alloy",
-                "model": "tts-1"
+                "model": "tts-1",
+                "output_language": "en"
             }
         }
 
@@ -194,13 +202,23 @@ class QueryRequest(BaseModel):
         default=False,
         description="If True, return base64-encoded audio data directly instead of saving to file"
     )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session ID for maintaining conversation history"
+    )
+    output_language: Optional[str] = Field(
+        default="en",
+        description="Target language for audio output (e.g., 'en', 'Chinese')."
+    )
 
     class Config:
         schema_extra = {
             "example": {
                 "query": "organic shampoo under $20",
                 "voice": "sarah",
-                "return_audio_data": True
+                "return_audio_data": True,
+                "session_id": "123e4567-e89b-12d3-a456-426614174000",
+                "output_language": "en"
             }
         }
 
@@ -221,6 +239,7 @@ class QueryResponse(BaseModel):
         description="Base64-encoded MP3 audio data (only if return_audio_data=True)"
     )
     step_log: Optional[List[Dict[str, Any]]] = None
+    session_id: Optional[str] = None
 
 
 # ============================================================================
@@ -297,6 +316,13 @@ async def generate_tts(request: TTSRequest):
 
         # Import TTS module
         from voice.tts import synthesize_speech_async, estimate_audio_duration, map_voice
+        from voice.translator import translate_text
+
+        # Translate if needed
+        text_to_speak = request.text
+        if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
+            text_to_speak = translate_text(request.text, request.output_language)
+            logger.info(f"Translated text for TTS: {text_to_speak[:50]}...")
 
         # Generate unique filename
         audio_id = str(uuid.uuid4())
@@ -307,7 +333,7 @@ async def generate_tts(request: TTSRequest):
 
         # Synthesize speech (async)
         await synthesize_speech_async(
-            text=request.text,
+            text=text_to_speak,
             output_path=str(output_path),
             voice=elevenlabs_voice,
             model=request.model if hasattr(request, 'model') else "eleven_turbo_v2_5"
@@ -359,16 +385,23 @@ async def generate_tts_stream(request: TTSRequest):
         
         # Import TTS module
         from voice.tts import get_tts_instance, map_voice
+        from voice.translator import translate_text
         
         # Map voice name
         elevenlabs_voice = map_voice(request.voice)
+
+        # Translate if needed
+        text_to_speak = request.text
+        if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
+            text_to_speak = translate_text(request.text, request.output_language)
+            logger.info(f"Translated text for TTS stream: {text_to_speak[:50]}...")
         
         # Get TTS instance and synthesize directly
         tts = get_tts_instance()
         voice_id = tts.DEFAULT_VOICES.get(elevenlabs_voice, elevenlabs_voice)
         
         result = await tts.synthesize(
-            text=request.text,
+            text=text_to_speak,
             voice_id=voice_id
         )
         
@@ -471,24 +504,53 @@ async def process_query(request: QueryRequest):
     ```
     """
     try:
-        logger.info(f"Query request: {request.query}")
+        # Session Management
+        session_id = request.session_id or str(uuid.uuid4())
+        if session_id not in SESSIONS:
+            SESSIONS[session_id] = {"history": [], "seen_ids": set()}
+        
+        session_data = SESSIONS[session_id]
+        chat_history = session_data["history"]
+        seen_product_ids = list(session_data["seen_ids"])
+        
+        logger.info(f"Query request: {request.query} (Session: {session_id})")
 
         # Run LangGraph pipeline
         logger.info("Running LangGraph pipeline...")
         graph = get_graph_app()
         result = graph.invoke({
             "query": request.query,
+            "chat_history": chat_history,
+            "seen_product_ids": seen_product_ids,
             "step_log": []
         })
 
         logger.info(f"Graph completed: task={result.get('task')}, "
                    f"docs={len(result.get('retrieved_docs', []))}")
 
+        # Update Session History
+        answer_text = result.get("answer") or ""
+        
+        # Only update history if successful answer
+        if answer_text:
+            chat_history.append({"role": "user", "content": request.query})
+            chat_history.append({"role": "assistant", "content": answer_text})
+            # Limit history to prevent context overflow (last 10 turns = 20 messages)
+            if len(chat_history) > 20:
+                SESSIONS[session_id]["history"] = chat_history[-20:]
+        
+        # Update seen_product_ids
+        retrieved_docs = result.get("retrieved_docs", [])
+        for doc in retrieved_docs:
+            doc_id = str(doc.get("doc_id", ""))
+            if doc_id:
+                SESSIONS[session_id]["seen_ids"].add(doc_id)
+
         # Generate TTS for answer
         logger.info("Generating TTS for answer...")
         from voice.tts import get_tts_instance, map_voice
+        from voice.translator import translate_text
         
-        answer_text = result.get("answer") or ""
         if not answer_text.strip():
             logger.warning("Graph returned empty answer. Using fallback response for TTS.")
             answer_text = "I could not generate a detailed answer right now, please try again."
@@ -496,6 +558,20 @@ async def process_query(request: QueryRequest):
         default_voice = DEFAULT_TTS_VOICE or "sarah"
         selected_voice = map_voice(request.voice) if request.voice else default_voice
         logger.info(f"TTS voice selected for query: {selected_voice}")
+        
+        # Translate if needed (only affects TTS, answer_text remains English for UI unless we update it)
+        text_to_speak = answer_text
+        if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
+            # Extract product titles to prevent translation of proper names
+            preserved_terms = []
+            if result.get("retrieved_docs"):
+                preserved_terms = [doc.get("title") for doc in result["retrieved_docs"] if doc.get("title")]
+            
+            translated_text = translate_text(answer_text, request.output_language, preserved_terms=preserved_terms)
+            logger.info(f"Translated text: {translated_text[:50]}...")
+            text_to_speak = translated_text
+            # Update answer text for frontend display as well (per user requirement)
+            answer_text = translated_text
         
         # Choose between saving to file or returning data directly
         audio_id = None
@@ -507,7 +583,7 @@ async def process_query(request: QueryRequest):
             logger.info("Generating TTS audio data (no file save)...")
             tts = get_tts_instance()
             voice_id = tts.DEFAULT_VOICES.get(selected_voice, selected_voice)
-            tts_result = await tts.synthesize(text=answer_text, voice_id=voice_id)
+            tts_result = await tts.synthesize(text=text_to_speak, voice_id=voice_id)
             audio_data_base64 = base64.b64encode(tts_result["audio_data"]).decode('utf-8')
             logger.info(f"TTS audio data generated: {len(tts_result['audio_data'])} bytes")
         else:
@@ -517,7 +593,7 @@ async def process_query(request: QueryRequest):
             output_path = OUTPUT_DIR / f"{audio_id}.mp3"
             
             await synthesize_speech_async(
-                text=answer_text,
+                text=text_to_speak,
                 output_path=str(output_path),
                 voice=selected_voice
             )
@@ -544,6 +620,7 @@ async def process_query(request: QueryRequest):
         # Sanitize data before returning (replace NaN with None/null)
         sanitized_result = sanitize_data({
             "success": True,
+            "session_id": session_id,
             "query": request.query,
             "answer": answer_text,
             "citations": result.get("citations", []),
@@ -593,7 +670,16 @@ async def process_query_stream(request: QueryRequest):
     
     async def event_generator():
         try:
-            logger.info(f"Streaming query request: {request.query}")
+            # Session Management
+            session_id = request.session_id or str(uuid.uuid4())
+            if session_id not in SESSIONS:
+                SESSIONS[session_id] = {"history": [], "seen_ids": set()}
+            
+            session_data = SESSIONS[session_id]
+            chat_history = session_data["history"]
+            seen_product_ids = list(session_data["seen_ids"])
+            
+            logger.info(f"Streaming query request: {request.query} (Session: {session_id})")
             
             # Create graph with streaming support
             graph = get_graph_app()
@@ -601,6 +687,8 @@ async def process_query_stream(request: QueryRequest):
             # Initial state
             initial_state = {
                 "query": request.query,
+                "chat_history": chat_history,
+                "seen_product_ids": seen_product_ids,
                 "step_log": []
             }
             
@@ -633,6 +721,21 @@ async def process_query_stream(request: QueryRequest):
                     # Store final state
                     final_result = node_state
             
+            # Store final answer in history
+            if final_result and final_result.get("answer"):
+                answer_text = final_result.get("answer")
+                chat_history.append({"role": "user", "content": request.query})
+                chat_history.append({"role": "assistant", "content": answer_text})
+                if len(chat_history) > 20:
+                    SESSIONS[session_id]["history"] = chat_history[-20:]
+                
+                # Update seen_product_ids
+                retrieved_docs = final_result.get("retrieved_docs", [])
+                for doc in retrieved_docs:
+                    doc_id = str(doc.get("doc_id", ""))
+                    if doc_id:
+                        SESSIONS[session_id]["seen_ids"].add(doc_id)
+            
             # Generate TTS for answer
             audio_id = None
             audio_url = None
@@ -641,6 +744,7 @@ async def process_query_stream(request: QueryRequest):
             if final_result and final_result.get("answer"):
                 logger.info("Generating TTS for answer...")
                 from voice.tts import get_tts_instance, map_voice
+                from voice.translator import translate_text
                 
                 try:
                     default_voice = DEFAULT_TTS_VOICE or "sarah"
@@ -650,11 +754,25 @@ async def process_query_stream(request: QueryRequest):
                     if not answer_text.strip():
                         answer_text = "I could not generate a detailed answer right now, please try again."
                     
+                    # Translate if needed
+                    text_to_speak = answer_text
+                    if request.output_language and request.output_language.lower() not in ["en", "english", "us", "uk"]:
+                        # Extract product titles to prevent translation of proper names
+                        preserved_terms = []
+                        if final_result.get("retrieved_docs"):
+                            preserved_terms = [doc.get("title") for doc in final_result["retrieved_docs"] if doc.get("title")]
+
+                        translated_text = translate_text(answer_text, request.output_language, preserved_terms=preserved_terms)
+                        logger.info(f"Translated text: {translated_text[:50]}...")
+                        text_to_speak = translated_text
+                        # Update answer text for frontend display as well
+                        answer_text = translated_text
+                    
                     if request.return_audio_data:
                         # Return audio data directly (no file saving)
                         tts = get_tts_instance()
                         voice_id = tts.DEFAULT_VOICES.get(selected_voice, selected_voice)
-                        tts_result = await tts.synthesize(text=answer_text, voice_id=voice_id)
+                        tts_result = await tts.synthesize(text=text_to_speak, voice_id=voice_id)
                         audio_data_base64 = base64.b64encode(tts_result["audio_data"]).decode('utf-8')
                         logger.info(f"TTS audio data generated: {len(tts_result['audio_data'])} bytes")
                     else:
@@ -663,7 +781,7 @@ async def process_query_stream(request: QueryRequest):
                         audio_id = str(uuid.uuid4())
                         output_path = OUTPUT_DIR / f"{audio_id}.mp3"
                         await synthesize_speech_async(
-                            text=answer_text,
+                            text=text_to_speak,
                             output_path=str(output_path),
                             voice=selected_voice
                         )
@@ -689,15 +807,16 @@ async def process_query_stream(request: QueryRequest):
                 product['cited'] = idx in cited_doc_numbers
             
             # Send final result (sanitize to remove NaN values)
-            answer_text = final_result.get("answer", "")
+            # answer_text might be updated by translation above
             logger.info(f"Sending final result - answer length: {len(answer_text)}, answer preview: {answer_text[:200]}")
             
             result_data = {
                 "type": "result",
                 "data": sanitize_data({
                     "success": True,
+                    "session_id": session_id,
                     "query": request.query,
-                    "answer": answer_text,
+                    "answer": answer_text,  # This will be the translated text if translation occurred
                     "citations": final_result.get("citations", []),
                     "products": products,
                     "task": final_result.get("task"),
@@ -739,7 +858,10 @@ async def process_query_stream(request: QueryRequest):
 # ============================================================================
 
 @app.post("/api/asr", tags=["ASR"])
-async def transcribe_audio(audio_file: UploadFile = File(...)):
+async def transcribe_audio(
+    audio_file: UploadFile = File(...),
+    language: Optional[str] = Form(None)
+):
     """
     Transcribe audio using local Whisper model
     
@@ -751,11 +873,12 @@ async def transcribe_audio(audio_file: UploadFile = File(...)):
     **Example:**
     ```bash
     curl -X POST http://localhost:8000/api/asr \\
-      -F "audio_file=@recording.wav"
+      -F "audio_file=@recording.wav" \\
+      -F "language=zh"
     ```
     """
     try:
-        logger.info(f"ASR request received: {audio_file.filename}")
+        logger.info(f"ASR request received: {audio_file.filename}, language={language}")
         
         # Read audio file contents
         contents = await audio_file.read()
@@ -806,9 +929,18 @@ async def transcribe_audio(audio_file: UploadFile = File(...)):
             with open(audio_path, "rb") as f:
                 audio_data = f.read()
             
-            # Get ASR instance and transcribe (force CPU to avoid CUDA issues)
-            asr = get_asr_instance(model="base", device="cpu", language="en")
-            result = await asr.transcribe(audio_data)
+            # Get ASR instance and transcribe (use CUDA and larger model for better accuracy)
+            # 4090 GPU detected, using large-v3 model
+            # Note: get_asr_instance uses singleton pattern, so language param here only affects first init.
+            # However, we pass language explicitly to transcribe method below.
+            asr = get_asr_instance(model="large-v3", device="cuda", language="en")
+            
+            # Pass specific language to transcribe method if provided
+            result = await asr.transcribe(
+                audio_data, 
+                initial_prompt="Conversation about shopping for products on Amazon.",
+                language=language
+            )
             
             logger.info(f"Transcription completed: {len(result['text'])} characters")
             

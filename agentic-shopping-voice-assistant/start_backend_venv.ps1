@@ -16,3 +16,5 @@ Set-Location -Path $PSScriptRoot
 # Start uvicorn
 uvicorn backend.api_gateway:app --reload --port 8001
 
+
+

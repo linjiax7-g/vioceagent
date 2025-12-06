@@ -45,11 +45,14 @@ def retrieve_from_web(
     logger.info(f"[WEB] Reformulated query: {product_query}")
 
     # Call MCP with shopping-optimized parameters
+    # If min_price is set, we need to fetch MORE results because cheap items dominate
+    multiplier = 4 if filters.get("min_price") else 2
+    
     result = call_mcp_tool(
         "web.search",
         {
             "query": product_query,
-            "max_results": k * 2,  # Request more to filter out non-products
+            "max_results": k * multiplier,  # Request more to filter out non-products
             "search_type": "shopping",  # Request shopping results
         },
     )
@@ -98,9 +101,11 @@ def _reformulate_for_shopping(query: str, filters: Dict) -> str:
     
     # Add price range if available
     if filters.get("max_price") and filters.get("min_price"):
-        reformulated += f" under ${filters['max_price']}"
+        reformulated += f" price ${filters['min_price']}..${filters['max_price']}"
     elif filters.get("max_price"):
         reformulated += f" under ${filters['max_price']}"
+    elif filters.get("min_price"):
+        reformulated += f" over ${filters['min_price']}"
     
     # Add brand filter
     if filters.get("brand"):
@@ -148,12 +153,14 @@ def _filter_and_enhance_results(docs: List[Dict], original_query: str, filters: 
         is_shopping_site = any(x in url for x in ["amazon.com", "walmart.com", "target.com", 
                                                     "ebay.com", "etsy.com", "/product", "/p/", "/dp/"])
         
-        # Try to extract price from snippet
-        price = _extract_price_from_snippet(snippet)
-        if price:
-            doc["price"] = price
+        # Try to extract price from snippet if missing
+        if "price" not in doc or doc["price"] is None:
+            extracted_price = _extract_price_from_snippet(snippet)
+            if extracted_price:
+                doc["price"] = extracted_price
         
-        # Apply price filters
+        # Ensure we have the price for filtering
+        price = doc.get("price")
         if filters:
             if "min_price" in filters and price:
                 try:

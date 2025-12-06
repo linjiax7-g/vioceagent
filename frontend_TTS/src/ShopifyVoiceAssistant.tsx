@@ -38,7 +38,7 @@ const ShopifyVoiceAssistant = () => {
   const [chatMessages, setChatMessages] = useState<Array<{type: 'user' | 'assistant', text: string, timestamp: string}>>([
     {
       type: 'assistant',
-      text: "Hello! I'm your shopping assistant. I can help you find products, compare options, or check prices. What are you looking for today?",
+      text: "Hello! I'm your shopping assistant. I can help you find products and prices. What are you looking for?",
       timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -52,11 +52,14 @@ const ShopifyVoiceAssistant = () => {
       try {
         return JSON.parse(saved);
       } catch {
-        return { agentVoice: 'sarah', userVoice: 'sarah' };
+        return { agentVoice: 'sarah', userVoice: 'sarah', language: 'en' };
       }
     }
-    return { agentVoice: 'sarah', userVoice: 'sarah' };
+    return { agentVoice: 'sarah', userVoice: 'sarah', language: 'en' };
   });
+
+  // Session ID for conversation history
+  const sessionIdRef = useRef<string>(crypto.randomUUID());
 
   // Refs
   const recordingIntervalRef = useRef<any>(null);
@@ -425,7 +428,7 @@ const ShopifyVoiceAssistant = () => {
       message,
       detail,
       additionalInfo,
-      timestamp: index * 0.8,
+      timestamp: Date.now(),
       rawData: step  // Keep raw data for detailed viewing
     };
   };
@@ -488,6 +491,24 @@ const ShopifyVoiceAssistant = () => {
     ]
   };
 
+  // Map language codes to BCP 47 tags for Web Speech API
+  const getBCP47Language = (langCode?: string) => {
+    const map: Record<string, string> = {
+      'en': 'en-US',
+      'zh': 'zh-CN',
+      'ja': 'ja-JP',
+      'ko': 'ko-KR',
+      'es': 'es-ES',
+      'fr': 'fr-FR',
+      'de': 'de-DE',
+      'it': 'it-IT',
+      'pt': 'pt-PT',
+      'hi': 'hi-IN',
+      'ru': 'ru-RU'
+    };
+    return map[langCode || 'en'] || 'en-US';
+  };
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -529,35 +550,27 @@ const ShopifyVoiceAssistant = () => {
           recognitionRef.current = recognition;
           recognition.continuous = true;
           recognition.interimResults = true;
-          recognition.lang = 'en-US';
+          recognition.lang = getBCP47Language(voiceConfig.language);
+          console.log('Starting speech recognition with language:', recognition.lang);
           recognition.onresult = (event: any) => {
-            let interim = '';
-            let final = '';
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-              const tr = event.results[i][0].transcript.trim();
-              if (event.results[i].isFinal) {
-                final += tr + ' ';
+            let finalStr = '';
+            let interimStr = '';
+
+            // Reconstruct the entire transcript from the event results to avoid duplication
+            for (let i = 0; i < event.results.length; i++) {
+              const result = event.results[i];
+              const transcript = result[0].transcript;
+              if (result.isFinal) {
+                finalStr += transcript;
               } else {
-                interim += tr + ' ';
+                interimStr += transcript;
               }
             }
             
-            if (final) {
-              setFinalTranscript((prev) => {
-                const newFinal = prev ? `${prev} ${final}`.trim() : final.trim();
-                setTextInput(newFinal);
-                return newFinal;
-              });
-              setLiveTranscript('');
-            } else if (interim) {
-              setLiveTranscript(interim.trim());
-              const baseText = finalTranscript;
-              if (baseText) {
-                setTextInput(`${baseText} ${interim}`.trim());
-              } else {
-                setTextInput(interim.trim());
-              }
-            }
+            // Only update if we have new content to avoid loops
+            setFinalTranscript(finalStr);
+            setLiveTranscript(interimStr);
+            setTextInput((finalStr + interimStr).trim());
           };
           recognition.onerror = () => {};
           recognition.onend = () => {};
@@ -595,6 +608,11 @@ const ShopifyVoiceAssistant = () => {
           const blob = audioBlob || new Blob([], { type: 'audio/wav' });
           const file = new File([blob], 'recording.wav', { type: blob.type || 'audio/wav' });
           fd.append('audio_file', file);
+          // Append language if available (for backend Whisper)
+          if (voiceConfig.language) {
+            fd.append('language', voiceConfig.language);
+          }
+          
           fetch(`${API_BASE_URL}/api/asr`, { method: 'POST', body: fd })
             .then(async (r) => {
               if (!r.ok) {
@@ -629,6 +647,9 @@ const ShopifyVoiceAssistant = () => {
         try {
           const fd = new FormData();
           fd.append('audio_file', file);
+          if (voiceConfig.language) {
+            fd.append('language', voiceConfig.language);
+          }
           const r = await fetch(`${API_BASE_URL}/api/asr`, { method: 'POST', body: fd });
           if (r.ok) {
             const data = await r.json();
@@ -653,7 +674,7 @@ const ShopifyVoiceAssistant = () => {
       status: 'in_progress',
       message: 'Connecting to Agent',
       detail: 'Establishing connection and preparing to process your request...',
-      timestamp: 0,
+      timestamp: Date.now(),
       additionalInfo: []
     };
     setAgentSteps([initialStep]);
@@ -676,7 +697,10 @@ const ShopifyVoiceAssistant = () => {
     setFinalTranscript('');
     
     setChatMessages(prev => {
-      if (prev.some(msg => msg.text === query)) {
+      // Only check the very last message to prevent accidental double-sends
+      // Do NOT check entire history with .some() as users often repeat commands
+      const lastMsg = prev[prev.length - 1];
+      if (lastMsg && lastMsg.text === query && lastMsg.type === 'user') {
         return prev;
       }
       const now = new Date();
@@ -753,12 +777,16 @@ const ShopifyVoiceAssistant = () => {
         // Check if current voice matches cached audio voice
         const voiceMatches = result?.audio_voice === voiceConfig.agentVoice;
         
+        // Check if language matches (if changed, we need to regenerate)
+        // Note: we don't store audio_language in result yet, so this is a simplified check
+        // Ideally we should store audio_language in result like audio_voice
+        
         // Check if we can reuse cached audio data
-        if (voiceMatches && result?.audio_data) {
+        if (voiceMatches && result?.audio_data && (!result.audio_language || result.audio_language === (voiceConfig.language || 'en'))) {
           // Use cached base64 audio data (voice matches, no API call needed)
           console.log('Using cached audio data (base64) with matching voice:', voiceConfig.agentVoice);
           audioSrc = `data:audio/mpeg;base64,${result.audio_data}`;
-        } else if (voiceMatches && result?.audio_url) {
+        } else if (voiceMatches && result?.audio_url && (!result.audio_language || result.audio_language === (voiceConfig.language || 'en'))) {
           // Use cached audio URL (voice matches, no API call needed)
           console.log('Using cached audio URL with matching voice:', result.audio_url);
           audioSrc = `${API_BASE_URL}${result.audio_url}`;
@@ -767,7 +795,7 @@ const ShopifyVoiceAssistant = () => {
           if (!voiceMatches) {
             console.log(`Voice changed from ${result?.audio_voice} to ${voiceConfig.agentVoice}, regenerating TTS...`);
           } else {
-            console.log('No cached audio, generating new TTS...');
+            console.log('No cached audio or language changed, generating new TTS...');
           }
           
           const text = result?.answer || 'Answer not available';
@@ -775,7 +803,11 @@ const ShopifyVoiceAssistant = () => {
           const response = await fetch(`${API_BASE_URL}/api/tts/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, voice: voiceConfig.agentVoice })
+            body: JSON.stringify({ 
+              text, 
+              voice: voiceConfig.agentVoice,
+              output_language: voiceConfig.language || 'en'
+            })
           });
           
           if (!response.ok) {
@@ -848,14 +880,16 @@ const ShopifyVoiceAssistant = () => {
       abortControllerRef.current = new AbortController();
       
       // Use streaming endpoint with direct audio data (no file saving)
-        const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
+      const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            query, 
-            voice: voiceConfig.agentVoice,
-            return_audio_data: true  // Return base64 audio directly, no file saving
-          }),
+        body: JSON.stringify({ 
+          query, 
+          voice: voiceConfig.agentVoice,
+          return_audio_data: true,  // Return base64 audio directly, no file saving
+          session_id: sessionIdRef.current, // Send session ID for history
+          output_language: voiceConfig.language || 'en'
+        }),
         signal: abortControllerRef.current.signal
       });
       
@@ -960,8 +994,15 @@ const ShopifyVoiceAssistant = () => {
         hasAnswer: !!answerText,
         answerLength: answerText.length,
         answerPreview: answerText.substring(0, 100),
-        task: finalResult.task
+        task: finalResult.task,
+        sessionId: finalResult.session_id
       });
+
+      // Update session ID if backend returned a new one (though we usually keep ours)
+      if (finalResult.session_id && finalResult.session_id !== sessionIdRef.current) {
+        console.log('Updating session ID from backend:', finalResult.session_id);
+        sessionIdRef.current = finalResult.session_id;
+      }
       
       // Set final result (include audio data for manual playback)
       setResult({
@@ -974,13 +1015,16 @@ const ShopifyVoiceAssistant = () => {
         stepLog: agentStepsRef.current,
         audio_data: finalResult.audio_data,  // Save audio data for reuse
         audio_url: finalResult.audio_url,    // Save audio URL for reuse (if any)
-        audio_voice: voiceConfig.agentVoice  // Save voice used for audio generation
+        audio_voice: voiceConfig.agentVoice,  // Save voice used for audio generation
+        audio_language: voiceConfig.language || 'en' // Save language used
       });
       
       // Add assistant message
       if (answerText) {
         setChatMessages(prev => {
-          if (prev.some(msg => msg.text === answerText)) {
+          // Only check last message for duplicates
+          const lastMsg = prev[prev.length - 1];
+          if (lastMsg && lastMsg.text === answerText && lastMsg.type === 'assistant') {
             return prev;
           }
           const now = new Date();
@@ -1074,7 +1118,7 @@ const ShopifyVoiceAssistant = () => {
   }, [result, productMetadata]);
 
   return (
-    <div className="app" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff', overflow: 'hidden', position: 'relative' }}>
+    <div className="app" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--apple-bg)', overflow: 'hidden', position: 'relative' }}>
       {/* Voice Settings Modal */}
       <VoiceSettings
         isOpen={isSettingsOpen}
@@ -1083,43 +1127,36 @@ const ShopifyVoiceAssistant = () => {
         currentSettings={voiceConfig}
       />
 
-      {/* Main content area: upper half */}
-      <div className="main" style={{ flex: 1, display: 'flex', gap: '12px', padding: '12px', boxSizing: 'border-box', minHeight: 0, alignItems: 'stretch', overflow: 'hidden' }}>
+      {/* Main content area */}
+      <div className="main" style={{ flex: 1, display: 'grid', gridTemplateColumns: '500px 1fr', gap: '16px', padding: '16px', boxSizing: 'border-box', minHeight: 0, overflow: 'hidden', maxWidth: '100%', margin: '0', width: '100%' }}>
         
         {/* LEFT: AI Chat + Input */}
-        <div className="left-panel" style={{ flex: 2, display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.12)', border: '2px solid #e5e7eb', position: 'relative', maxHeight: '100%' }}>
-          {/* Settings Button */}
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            style={{
-              position: 'absolute',
-              top: '12px',
-              right: '12px',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              fontSize: '20px',
-              cursor: 'pointer',
-              padding: '4px',
-              zIndex: 10,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.3s ease',
-              opacity: 0.6
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = 'scale(1.2) rotate(90deg)';
-              e.currentTarget.style.opacity = '1';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = 'scale(1) rotate(0deg)';
-              e.currentTarget.style.opacity = '0.6';
-            }}
-            title="Voice Settings"
-          >
-            ⚙️
-          </button>
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
+          {/* Header */}
+          <div style={{ 
+            padding: '16px',
+            display: 'flex', 
+            justifyContent: 'flex-start', 
+            alignItems: 'center',
+            background: 'rgba(255,255,255,0.5)',
+            borderBottom: '1px solid rgba(0,0,0,0.05)'
+          }}>
+             <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="apple-button secondary icon-only"
+                style={{ 
+                  width: 32, 
+                  height: 32, 
+                  padding: 6
+                }}
+                title="Voice Settings"
+              >
+                <svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+          </div>
 
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <AIChat
@@ -1131,54 +1168,53 @@ const ShopifyVoiceAssistant = () => {
               recordingTime={recordingTime}
               apiBaseUrl={API_BASE_URL}
               autoPlayAudioUrl={autoPlayAudioUrl}
+              agentVoice={voiceConfig.agentVoice}
             />
           </div>
+          
           {recordingState === 'recording' && (
-            <div style={{ padding: '12px 16px 0 16px', background: '#fff' }}>
+            <div style={{ padding: '0 16px 16px 16px' }}>
               <div
                 style={{
-                  borderRadius: '16px',
-                  background: '#fff',
-                  padding: '16px',
-                  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
-                  border: '1px solid rgba(15, 23, 42, 0.08)'
+                  borderRadius: '12px',
+                  background: 'rgba(0, 122, 255, 0.1)',
+                  padding: '12px',
+                  border: '1px solid rgba(0, 122, 255, 0.2)',
+                  display: 'flex', 
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '8px'
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', height: '20px' }}>
                   {waveformData.slice(-20).map((val, i) => (
-                    <div key={i} style={{ flex: 1, height: `${Math.max(6, val / 1.5)}px`, background: 'var(--apple-primary)', borderRadius: '4px', transition: 'height 0.1s' }} />
+                    <div key={i} style={{ width: '4px', height: `${Math.max(4, val / 2)}px`, background: 'var(--apple-primary)', borderRadius: '2px', transition: 'height 0.05s' }} />
                   ))}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: '#555', fontWeight: 600 }}>
-                  <span>Agent is listening... {(recordingTime / 1000).toFixed(1)}s</span>
-                </div>
+                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--apple-primary)' }}>
+                  Listening... {(recordingTime / 1000).toFixed(1)}s
+                </span>
               </div>
             </div>
           )}
-          <div className="input-bar" style={{ flexShrink: 0, padding: '12px', boxSizing: 'border-box', background: '#fff' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#ffffff', padding: '10px 14px', borderRadius: '24px', border: '1px solid var(--apple-border)', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' }}>
+
+          <div className="input-bar" style={{ flexShrink: 0, padding: '16px', background: 'rgba(255,255,255,0.5)', borderTop: '1px solid var(--apple-border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <button
                 onClick={openAudioFilePicker}
                 disabled={isProcessing || recordingState === 'recording'}
-                style={{ 
-                  background: 'transparent', 
-                  border: 'none',
-                  outline: 'none',
-                  fontSize: '22px', 
-                  cursor: 'pointer',
-                  opacity: (isProcessing || recordingState === 'recording') ? 0.4 : 0.7,
-                  padding: '6px',
-                  transition: 'opacity 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
-                onMouseLeave={(e) => e.currentTarget.style.opacity = (isProcessing || recordingState === 'recording') ? '0.4' : '0.7'}
+                className="apple-button secondary icon-only"
+                style={{ flexShrink: 0, padding: 10 }}
                 title="Upload audio file"
               >
-                📁
+                <svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
               </button>
               
               <input
                 type="text"
+                className="apple-input"
                 value={textInput}
                 onChange={(e) => {
                   const newValue = e.target.value;
@@ -1193,189 +1229,166 @@ const ShopifyVoiceAssistant = () => {
                     processAudio();
                   }
                 }}
-                placeholder={recordingState === 'recording' ? 'Listening...' : 'Tap mic to speak...'}
+                placeholder={recordingState === 'recording' ? 'Listening...' : 'Message...'}
                 disabled={isProcessing || recordingState === 'recording'}
-                style={{ 
-                  flex: 1,
-                  border: 'none',
-                  background: 'transparent',
-                  fontSize: '15px',
-                  outline: 'none',
-                  padding: '6px 8px',
-                  color: 'var(--apple-text)',
-                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif',
-                  letterSpacing: '-0.2px'
-                }}
               />
               
               <button
                 onClick={recordingState === 'recording' ? stopRecording : startRecording}
+                className={`apple-button icon-only ${recordingState === 'recording' ? 'danger' : ''}`}
                 disabled={isProcessing}
                 style={{ 
-                  background: recordingState === 'recording' ? 'var(--apple-danger)' : 'var(--apple-primary)',
-                  border: 'none',
-                  outline: 'none',
-                  borderRadius: '50%',
-                  width: '36px',
-                  height: '36px',
-                  color: '#fff',
-                  fontSize: '18px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  opacity: isProcessing ? 0.4 : 1,
-                  flexShrink: 0,
-                  transition: 'all 0.2s',
-                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)'
+                  width: '40px', 
+                  height: '40px', 
+                  borderRadius: '50%', 
+                  padding: '10px', 
+                  flexShrink: 0, 
+                  boxSizing: 'border-box'
                 }}
                 title={recordingState === 'recording' ? 'Stop recording' : 'Start recording'}
               >
-                {recordingState === 'recording' ? '⏹' : '🎙'}
+                {recordingState === 'recording' ? (
+                  <svg width="100%" height="100%" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                ) : (
+                  <svg width="100%" height="100%" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                  </svg>
+                )}
               </button>
 
               <button
                 onClick={isProcessing ? stopGeneration : processAudio}
+                className={`apple-button icon-only ${isProcessing ? 'danger' : ''}`}
                 disabled={recordingState === 'recording' || (!isProcessing && !textInput.trim())}
                 style={{ 
-                  background: isProcessing ? 'var(--apple-danger)' : 'var(--apple-primary)',
-                  border: 'none',
-                  outline: 'none',
-                  borderRadius: '50%',
-                  width: '36px',
-                  height: '36px',
-                  color: '#fff',
-                  fontSize: '16px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  opacity: (recordingState === 'recording' || (!isProcessing && !textInput.trim())) ? 0.4 : 1,
-                  flexShrink: 0,
-                  transition: 'all 0.2s',
-                  boxShadow: (isProcessing || textInput.trim()) ? '0 2px 8px rgba(0, 122, 255, 0.3)' : 'none'
+                  width: '40px', 
+                  height: '40px', 
+                  borderRadius: '50%', 
+                  padding: isProcessing ? '12px' : '10px', 
+                  flexShrink: 0, 
+                  boxSizing: 'border-box',
+                  opacity: (recordingState === 'recording' || (!isProcessing && !textInput.trim())) ? 0.5 : 1
                 }}
                 title={isProcessing ? "Stop generation" : "Send message"}
               >
-                {isProcessing ? '⏹' : '⬆'}
+                {isProcessing ? (
+                  <svg width="100%" height="100%" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                ) : (
+                  <svg width="100%" height="100%" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                  </svg>
+                )}
               </button>
             </div>
           </div>
         </div>
 
         {/* RIGHT: Products + Agent Log */}
-        <div className="right-panel" style={{ flex: 3, display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, paddingRight: '4px' }}>
-          <div style={{ flex: 1, minHeight: 0, paddingRight: '4px', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-            <ResultPanel
-              result={enrichedResult}
-              isProcessing={isProcessing}
-              onProductClick={setSelectedProduct}
-            />
+        <div className="right-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, overflow: 'hidden' }}>
+          
+          {/* Results Panel */}
+          <div className="glass-panel" style={{ flex: 3, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px 10px 20px', background: 'rgba(255,255,255,0.5)' }}>
+               <h2 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--apple-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Results</h2>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', padding: '0' }}>
+              <ResultPanel
+                result={enrichedResult}
+                isProcessing={isProcessing}
+                onProductClick={setSelectedProduct}
+              />
+            </div>
           </div>
-          <div style={{ paddingRight: '4px', marginTop: '12px', height: '220px', minHeight: '220px' }}>
-            <AgentLogPanel
-              agentSteps={agentSteps}
-              currentAgentStep={currentAgentStep}
-              isProcessing={isProcessing}
-            />
+
+          {/* Logs Panel */}
+          <div className="glass-panel" style={{ flex: 1, minHeight: '180px', maxHeight: '240px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+             <div style={{ padding: '16px 20px 10px 20px', background: 'rgba(255,255,255,0.5)' }}>
+               <h2 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--apple-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Agent Activity</h2>
+            </div>
+            <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+              <AgentLogPanel
+                agentSteps={agentSteps}
+                currentAgentStep={currentAgentStep}
+                isProcessing={isProcessing}
+              />
+            </div>
           </div>
         </div>
       </div>
 
       {/* Product Detail Modal */}
       {selectedProduct && (
-        <div className="apple-modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16 }}>
-          <div className="apple-card" style={{ maxWidth: 720, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div style={{ position: 'sticky', top: 0, borderBottom: '1px solid var(--apple-border)', padding: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', background: 'var(--apple-card)' }}>
+        <div className="apple-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setSelectedProduct(null); }}>
+          <div className="apple-card animate-slide-up" style={{ maxWidth: '700px', width: '90%', maxHeight: '85vh', overflowY: 'auto', padding: '0', background: '#fff', boxShadow: 'var(--apple-shadow-lg)' }}>
+            
+            <div style={{ position: 'sticky', top: 0, borderBottom: '1px solid var(--apple-border)', padding: '20px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'start', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', zIndex: 10 }}>
               <div>
-                <h2 className="apple-section-title">{selectedProduct.title}</h2>
-                <p style={{ color: 'var(--apple-text-secondary)', fontSize: 14, marginTop: 4, fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif' }}>{selectedProduct.brand}</p>
+                <h2 style={{ fontSize: '22px', lineHeight: 1.2 }}>{selectedProduct.title}</h2>
+                <p style={{ fontSize: '15px', marginTop: '4px' }}>{selectedProduct.brand}</p>
               </div>
-              <button onClick={() => setSelectedProduct(null)} className="apple-button apple-button--secondary" style={{ padding: '8px 12px', fontSize: 14 }}>
-                ✖
+              <button onClick={() => setSelectedProduct(null)} className="apple-button secondary icon-only" style={{ width: 30, height: 30, fontSize: 12 }}>
+                ✕
               </button>
             </div>
 
-            <div style={{ padding: 24 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                <div>
-                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--apple-text-secondary)', marginBottom: 8 }}>Price</p>
-                  <p style={{ fontSize: 28, fontWeight: 700, color: 'var(--apple-success)' }}>
+            <div style={{ padding: '32px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '32px' }}>
+                <div className="apple-card" style={{ padding: '20px', background: 'var(--apple-bg)', border: 'none' }}>
+                  <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--apple-text-secondary)', marginBottom: '8px', textTransform: 'uppercase' }}>Price</p>
+                  <p style={{ fontSize: '32px', fontWeight: 600, color: 'var(--apple-text-primary)' }}>
                     ${selectedProduct.price != null ? selectedProduct.price.toFixed(2) : 'N/A'}
                   </p>
                 </div>
-                <div>
-                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--apple-text-secondary)', marginBottom: 8 }}>Customer Rating</p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 24 }}>⭐</span>
-                    <div>
-                      <p style={{ fontSize: 24, fontWeight: 700, color: 'var(--apple-text)' }}>
-                        {selectedProduct.rating != null ? selectedProduct.rating.toFixed(1) : 'N/A'}
-                      </p>
-                      <p style={{ fontSize: 12, color: 'var(--apple-text-secondary)' }}>
-                        {selectedProduct.ratingCount != null ? selectedProduct.ratingCount.toLocaleString() : '0'} reviews
-                      </p>
-                    </div>
+                <div className="apple-card" style={{ padding: '20px', background: 'var(--apple-bg)', border: 'none' }}>
+                  <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--apple-text-secondary)', marginBottom: '8px', textTransform: 'uppercase' }}>Rating</p>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                     <span style={{ fontSize: '24px', color: 'var(--apple-warning)' }}>★</span>
+                     <span style={{ fontSize: '32px', fontWeight: 600 }}>{selectedProduct.rating != null ? selectedProduct.rating.toFixed(1) : 'N/A'}</span>
+                     <span style={{ fontSize: '14px', color: 'var(--apple-text-secondary)' }}>({selectedProduct.ratingCount?.toLocaleString() ?? 0})</span>
                   </div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 24 }}>
-                <h3 style={{ fontWeight: 600, color: 'var(--apple-text)', marginBottom: 12, fontSize: 16 }}>Description</h3>
-                <p style={{ color: 'var(--apple-text)', lineHeight: 1.6, fontSize: 15 }}>{selectedProduct.description}</p>
+              <div style={{ marginBottom: '32px' }}>
+                <h3 style={{ fontSize: '18px', marginBottom: '12px' }}>Description</h3>
+                <p style={{ fontSize: '16px', color: 'var(--apple-text-primary)', lineHeight: 1.6 }}>{selectedProduct.description}</p>
               </div>
 
-              <div style={{ marginTop: 24 }}>
-                <h3 style={{ fontWeight: 600, color: 'var(--apple-text)', marginBottom: 12, fontSize: 16 }}>Ingredients</h3>
-                <p className="apple-card" style={{ padding: 16, fontSize: 14, color: 'var(--apple-text)', background: 'var(--apple-hover)' }}>{selectedProduct.ingredients}</p>
-              </div>
+              {selectedProduct.ingredients && (
+                <div style={{ marginBottom: '32px' }}>
+                  <h3 style={{ fontSize: '18px', marginBottom: '12px' }}>Ingredients</h3>
+                  <div className="apple-card" style={{ padding: '16px', background: 'var(--apple-bg)', fontSize: '15px' }}>
+                    {selectedProduct.ingredients}
+                  </div>
+                </div>
+              )}
 
-              <div style={{ marginTop: 24 }}>
-                <h3 style={{ fontWeight: 600, color: 'var(--apple-text)', marginBottom: 12, fontSize: 16 }}>Data Lineage</h3>
-                <div style={{ display: 'grid', gap: 12 }}>
+              <div>
+                <h3 style={{ fontSize: '18px', marginBottom: '12px' }}>Sources</h3>
+                <div style={{ display: 'grid', gap: '12px' }}>
                   {selectedProduct.source.map((src: any, i: number) => (
-                    <div key={i} className="apple-card" style={{ padding: 16, background: 'var(--apple-hover)' }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', border: '1px solid var(--apple-border)', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '16px' }}>{src.type === 'private' ? '🔒' : '🌐'}</span>
                         <div>
-                          <p style={{ fontWeight: 600, color: 'var(--apple-text)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                            {src.type === 'private' ? (
-                              <>Private Catalog</>
-                            ) : (
-                              <>Web Source</>
-                            )}
-                          </p>
-                          <p style={{ fontSize: 13, color: 'var(--apple-text-secondary)', marginTop: 4 }}>
-                            {src.type === 'private' ? `Document ID: ${src.docId}` : `Source: ${new URL(src.url).hostname}`}
-                          </p>
+                          <div style={{ fontSize: '14px', fontWeight: 500 }}>{src.type === 'private' ? 'Internal Catalog' : 'Web Search'}</div>
+                          <div style={{ fontSize: '12px', color: 'var(--apple-text-secondary)' }}>{src.type === 'private' ? src.docId : new URL(src.url).hostname}</div>
                         </div>
-                        {src.type === 'web' && (
-                          <button onClick={() => window.open(src.url, '_blank')} className="apple-button apple-button--primary" style={{ padding: '6px 10px', fontSize: 12 }}>
-                            Open ↗
-                          </button>
-                        )}
                       </div>
+                      {src.type === 'web' && (
+                        <a href={src.url} target="_blank" rel="noreferrer" className="apple-button secondary" style={{ padding: '6px 12px', fontSize: '13px', height: 'auto', textDecoration: 'none' }}>
+                          View ↗
+                        </a>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
-
-              <div style={{ marginTop: 24 }}>
-                <h3 style={{ fontWeight: 600, color: 'var(--apple-text)', marginBottom: 12, fontSize: 16 }}>Customer Review</h3>
-                <div className="apple-card" style={{ padding: 16, background: 'var(--apple-hover)' }}>
-                  <p style={{ color: '#FF9500', marginBottom: 8 }}>⭐⭐⭐⭐⭐</p>
-                  <p style={{ color: 'var(--apple-text)', fontStyle: 'italic', fontSize: 14 }}>
-                    "{selectedProduct.reviewSample}"
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={() => setSelectedProduct(null)}
-                className="apple-button apple-button--primary"
-                style={{ width: '100%', padding: '14px 20px', fontWeight: 600, marginTop: 24, fontSize: 15 }}
-              >
-                Close
-              </button>
             </div>
           </div>
         </div>

@@ -26,7 +26,7 @@ class Constraints(BaseModel):
 
 class RouterOutput(BaseModel):
     reasoning: Optional[str] = Field(None, description="Explanation for the classification")
-    task: Literal["product_search", "comparison", "recommendation", "availability_check", "general_chat"]
+    task: Literal["product_search", "comparison", "recommendation", "availability_check", "general_chat", "clarification"]
     constraints: Constraints
     safety_flags: List[str] = Field(default_factory=list)
     
@@ -72,7 +72,7 @@ def parse_router_output(text: str) -> RouterOutput:
         
     # Default handling
     task = data.get("task", "product_search")
-    if task not in ["product_search", "comparison", "recommendation", "availability_check", "general_chat"]:
+    if task not in ["product_search", "comparison", "recommendation", "availability_check", "general_chat", "clarification"]:
         task = "product_search"
         
     constraints_data = data.get("constraints", {})

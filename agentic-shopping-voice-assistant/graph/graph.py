@@ -1,7 +1,7 @@
 # graph/graph.py
 from langgraph.graph import StateGraph, END
 from graph.state import GraphState
-from graph.nodes import router_node, planner_node, rag_retriever_node, web_retriever_node, hybrid_retriever_node, answerer_node
+from graph.nodes import router_node, planner_node, rag_retriever_node, web_retriever_node, hybrid_retriever_node, answerer_node, translator_node
 from graph.strategies import retrieval_router_hybrid, retrieval_router_reflection, retrieval_router_autonomous
 
 import logging
@@ -17,14 +17,15 @@ def router_edge_logic(state: GraphState) -> str:
     """
     Decide next step after router.
     - general_chat -> answerer (skip retrieval)
+    - clarification -> answerer (skip retrieval, ask user for info)
     - unsafe -> answerer (skip retrieval)
     - others -> planner
     """
     task = state.get("task", "product_search")
     safety_flags = state.get("safety_flags", [])
     
-    if "out_of_scope" in safety_flags or task == "general_chat":
-        logger.info("🗣️ Routing: General chat / Out of scope -> Skipping retrieval")
+    if "out_of_scope" in safety_flags or task == "general_chat" or task == "clarification":
+        logger.info(f"🗣️ Routing: {task} / Out of scope -> Skipping retrieval")
         return "answerer"
         
     if safety_flags:
@@ -44,6 +45,7 @@ def _build_graph_hybrid():
     workflow = StateGraph(GraphState)
     
     # Add nodes
+    workflow.add_node("translator", translator_node)
     workflow.add_node("router", router_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("rag_retriever", rag_retriever_node)
@@ -52,7 +54,8 @@ def _build_graph_hybrid():
     workflow.add_node("answerer", answerer_node)
     
     # Define edges
-    workflow.set_entry_point("router")
+    workflow.set_entry_point("translator")
+    workflow.add_edge("translator", "router")
     
     # NEW: Conditional edge from router
     workflow.add_conditional_edges(
